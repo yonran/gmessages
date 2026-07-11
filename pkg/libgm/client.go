@@ -152,6 +152,16 @@ type Client struct {
 	// yet validated against the live service.
 	UseModernReceive bool
 
+	// ReportInactive makes the periodic NOTIFY_DITTO_ACTIVITY ping report
+	// isActive=false (NotifyDittoActivityRequest.Success, field 2) instead of the
+	// hard-coded true. The real web client reports isActive=false when its tab is
+	// backgrounded, which is what makes Google keep notifying the phone; a
+	// headless bridge that always reports true stays perpetually "active" and
+	// suppresses the phone. This is a RUNTIME toggle (no re-pair needed) — the
+	// ditto pinger must still run (do NOT combine with DontMarkActive, which
+	// skips the ping entirely). See docs/CAPTURED_FINDINGS.md.
+	ReportInactive bool
+
 	PairCallback atomic.Pointer[func(data *gmproto.PairedData)]
 
 	AuthData *AuthData
