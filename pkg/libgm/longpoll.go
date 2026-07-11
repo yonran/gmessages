@@ -220,6 +220,22 @@ func (dp *dittoPinger) Ping(pingID uint64, timeout time.Duration, timeoutCount i
 		return
 	}
 	dp.pingHandlingLock.Unlock()
+	if dp.client.ReportInactive {
+		// We just reported isActive=false. The server does not ack "inactive"
+		// pings the way it acks active keepalives, so waiting for a response
+		// would always time out and wrongly fire PhoneNotResponding plus
+		// exponential back-off — which would starve the isActive=false signal
+		// Google needs to keep notifying the phone. Fire-and-forget: drain any
+		// late response so nothing blocks, and rely on the long-poll +
+		// data-receive check for connection health.
+		go func() {
+			select {
+			case <-pingChan:
+			case <-time.After(defaultPingTimeout):
+			}
+		}()
+		return
+	}
 	if timeoutCount == 0 {
 		dp.WaitForResponse(pingID, now, timeout, timeoutCount, pingChan, reset)
 	} else {
