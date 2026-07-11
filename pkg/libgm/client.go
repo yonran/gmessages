@@ -134,6 +134,14 @@ type Client struct {
 
 	GaiaHackyDeviceSwitcher int
 
+	// DontMarkActive makes this session behave like a permanently backgrounded
+	// Messages-for-web tab: postConnect skips SetActiveSession and the client
+	// does not ack browser-presence checks. It keeps receiving over the
+	// long-poll but never asserts foreground/active presence, so Google keeps
+	// delivering notifications to the phone instead of suppressing them for an
+	// "active web client". Set before Connect.
+	DontMarkActive bool
+
 	PairCallback atomic.Pointer[func(data *gmproto.PairedData)]
 
 	AuthData *AuthData
@@ -261,16 +269,23 @@ func (c *Client) postConnect() {
 	c.Logger.Debug().Msg("Sending acks before get updates request")
 	c.sessionHandler.sendAckRequest()
 	time.Sleep(1 * time.Second)
-	c.Logger.Debug().Msg("Sending get updates request")
-	err := c.SetActiveSession()
-	if err != nil {
-		c.Logger.Err(err).Msg("Failed to set active session")
-		c.triggerEvent(&events.PingFailed{
-			Error: fmt.Errorf("failed to set active session: %w", err),
-		})
-		return
+	if c.DontMarkActive {
+		// Passive/background mode: don't claim the active-session slot. The
+		// long-poll still delivers messages, but without asserting foreground
+		// presence Google keeps notifying the phone. See DontMarkActive.
+		c.Logger.Debug().Msg("DontMarkActive set — skipping SetActiveSession (passive/background mode)")
+	} else {
+		c.Logger.Debug().Msg("Sending get updates request")
+		err := c.SetActiveSession()
+		if err != nil {
+			c.Logger.Err(err).Msg("Failed to set active session")
+			c.triggerEvent(&events.PingFailed{
+				Error: fmt.Errorf("failed to set active session: %w", err),
+			})
+			return
+		}
+		c.Logger.Debug().Msg("Sent set active session/get updates request")
 	}
-	c.Logger.Debug().Msg("Sent set active session/get updates request")
 
 	doneChan := make(chan struct{})
 	go func() {
