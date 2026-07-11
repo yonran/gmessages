@@ -336,3 +336,29 @@ Therefore:
   heartbeat/keep-alive is ever wanted, but it carries no messages.
 - **Redirect effort to §3/§4:** the one-field `BrowserDetails.deviceType` change
   plus a re-pair. That is the actual notification lever the whole spec was chasing.
+
+---
+
+## ✅ CONFIRMED FIX (verified live, 2026-07-11)
+
+Root cause: the messages.google.com/web client runs an explicit **session-activity
+model** (found in the `mw_bugle` bundle): a `{isActive: <focus>}` presence value on
+the `NOTIFY_DITTO_ACTIVITY` action, plus a `BaseBugleSessionService` tracking
+`ACTIVE` / `INACTIVE_LACK_OF_ACTIVITY` / `INACTIVE_TIMEOUT`. Google suppresses the
+phone's own notification only while a device reports **isActive=true**; a
+backgrounded web tab reports **isActive=false** and the phone keeps notifying.
+
+`NotifyDittoActivityRequest` field 2 (libgm named it `success`) **IS that isActive
+flag.** libgm always sent `true`, so the bridge stayed perpetually active and the
+phone stayed silent. Passive mode (skipping the ping) did NOT work because Google
+keeps the last state unless *explicitly* told inactive.
+
+**Fix:** `libgm.Client.ReportInactive` → send `NotifyDittoActivity{Success:false}`
+(isActive=false). Exposed in openmessage as `OPENMESSAGE_INACTIVE=1`. Runtime only —
+**no re-pair**. Plus a fire-and-forget refinement so the un-acked inactive ping does
+not trigger false PhoneNotResponding / exponential back-off.
+
+**Verified:** with `OPENMESSAGE_INACTIVE=1`, sending a text made the phone vibrate
+again, and openmessage still received the message; connection stable, no ping
+flapping. Earlier candidates that did NOT fix it: deviceType WEB-vs-TABLET,
+PullMessages (`UseModernReceive`), passive mode (`DontMarkActive`).
