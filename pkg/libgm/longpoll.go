@@ -184,6 +184,15 @@ func (dp *dittoPinger) WaitForResponse(pingID uint64, start time.Time, timeout t
 }
 
 func (dp *dittoPinger) Ping(pingID uint64, timeout time.Duration, timeoutCount int, reset *resetter) {
+	if dp.client.DontMarkActive {
+		// Passive/background mode: skip the ditto-activity keepalive entirely so
+		// we never assert active presence. The long-poll receive loop
+		// self-maintains and keeps delivering messages (a backgrounded web tab
+		// likewise sends no activity pings); auth-expiry is still caught via
+		// ListenFatalError on the long-poll. The Loop's periodic data-receive
+		// check remains as a slow-path recovery.
+		return
+	}
 	dp.pingHandlingLock.Lock()
 	if time.Since(dp.lastPingTime) < minPingInterval {
 		dp.log.Debug().
