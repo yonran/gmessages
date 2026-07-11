@@ -142,6 +142,16 @@ type Client struct {
 	// "active web client". Set before Connect.
 	DontMarkActive bool
 
+	// UseModernReceive opts this session into the modern messages.google.com/web
+	// receive path (Messaging/PullMessages) instead of the legacy
+	// Messaging/ReceiveMessages long-poll. Defaults to false, so nothing changes
+	// unless a caller explicitly sets it before Connect. The two paths differ
+	// only in the request body + endpoint URL; the streaming response is parsed
+	// by the same readLongPoll dispatch (MED confidence — see
+	// docs/MODERN_API.md §1.1 / docs/IMPLEMENTATION_NOTES.md). This path is NOT
+	// yet validated against the live service.
+	UseModernReceive bool
+
 	PairCallback atomic.Pointer[func(data *gmproto.PairedData)]
 
 	AuthData *AuthData
@@ -235,9 +245,19 @@ func (c *Client) Connect() error {
 	//	return fmt.Errorf("failed to get web encryption key: %w", err)
 	//}
 	//c.updateWebEncryptionKey(webEncryptionKeyResponse.GetKey())
-	go c.doLongPoll(true, false, c.postConnect)
+	go c.receiveLoop(true, false, c.postConnect)
 	c.sessionHandler.startAckInterval()
 	return nil
+}
+
+// receiveLoop dispatches to the legacy ReceiveMessages long-poll or, when
+// UseModernReceive is set, the modern PullMessages long-poll. Both share the
+// same loop and response parser; see longpoll.go.
+func (c *Client) receiveLoop(loggedIn, background bool, onFirstConnect func()) bool {
+	if c.UseModernReceive {
+		return c.doPullMessages(loggedIn, background, onFirstConnect)
+	}
+	return c.doLongPoll(loggedIn, background, onFirstConnect)
 }
 
 func (c *Client) ConnectBackground() error {
@@ -246,7 +266,7 @@ func (c *Client) ConnectBackground() error {
 	} else if c.AuthData.Browser == nil {
 		return fmt.Errorf("not logged in")
 	}
-	cleanExit := c.doLongPoll(true, true, nil)
+	cleanExit := c.receiveLoop(true, true, nil)
 	c.sessionHandler.sendAckRequest()
 	if !cleanExit {
 		return fmt.Errorf("polling exited uncleanly")

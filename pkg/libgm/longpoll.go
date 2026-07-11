@@ -18,6 +18,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/exhttp"
 	"go.mau.fi/util/pblite"
+	"google.golang.org/protobuf/proto"
 
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
@@ -301,7 +302,76 @@ func tryReadBody(resp io.ReadCloser) []byte {
 	return data
 }
 
+// receiveEndpoint captures the only two things that differ between the legacy
+// ReceiveMessages long-poll and the modern PullMessages long-poll: the request
+// body and the endpoint URL. The streaming response is assumed identical and is
+// parsed by the shared readLongPoll (MED confidence — see MODERN_API.md §1.1;
+// fork readLongPoll if a capture shows the modern framing is not `[[ … ]]`
+// pblite).
+type receiveEndpoint struct {
+	name         string
+	url          string
+	urlGoogle    string
+	buildPayload func(c *Client, listenReqID string) proto.Message
+}
+
+var receiveEndpointLegacy = receiveEndpoint{
+	name:      "ReceiveMessages",
+	url:       util.ReceiveMessagesURL,
+	urlGoogle: util.ReceiveMessagesURLGoogle,
+	buildPayload: func(c *Client, listenReqID string) proto.Message {
+		return &gmproto.ReceiveMessagesRequest{
+			Auth: &gmproto.AuthMessage{
+				RequestID:        listenReqID,
+				TachyonAuthToken: c.AuthData.TachyonAuthToken,
+				Network:          c.AuthData.AuthNetwork(),
+				ConfigVersion:    util.ConfigMessage,
+			},
+			Unknown: &gmproto.ReceiveMessagesRequest_UnknownEmptyObject2{
+				Unknown: &gmproto.ReceiveMessagesRequest_UnknownEmptyObject1{},
+			},
+		}
+	},
+}
+
+var receiveEndpointModern = receiveEndpoint{
+	name:      "PullMessages",
+	url:       util.PullMessagesURL,
+	urlGoogle: util.PullMessagesURLGoogle,
+	// TODO(modern-api): the real PullMessagesRequest layout below the header is
+	// UNKNOWN (schema-less JS decode + encrypted capture). Per MODERN_API.md §4.2
+	// step 2 we start from a ReceiveMessagesRequest CLONE — its auth/header blob
+	// sits at field 1, which matches the one HIGH-confidence fact about the
+	// modern request (header = 1). It very likely also needs a resume cursor /
+	// ack-state field whose number is not yet known; add it here once captured.
+	buildPayload: func(c *Client, listenReqID string) proto.Message {
+		return &gmproto.ReceiveMessagesRequest{
+			Auth: &gmproto.AuthMessage{
+				RequestID:        listenReqID,
+				TachyonAuthToken: c.AuthData.TachyonAuthToken,
+				Network:          c.AuthData.AuthNetwork(),
+				ConfigVersion:    util.ConfigMessage,
+			},
+			Unknown: &gmproto.ReceiveMessagesRequest_UnknownEmptyObject2{
+				Unknown: &gmproto.ReceiveMessagesRequest_UnknownEmptyObject1{},
+			},
+		}
+	},
+}
+
+// doLongPoll runs the legacy Messaging/ReceiveMessages receive loop.
 func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bool {
+	return c.pollReceive(receiveEndpointLegacy, loggedIn, background, onFirstConnect)
+}
+
+// doPullMessages runs the modern Messaging/PullMessages receive loop. It is the
+// parallel of doLongPoll gated by Client.UseModernReceive. NOT yet validated
+// against the live service — see docs/IMPLEMENTATION_NOTES.md.
+func (c *Client) doPullMessages(loggedIn, background bool, onFirstConnect func()) bool {
+	return c.pollReceive(receiveEndpointModern, loggedIn, background, onFirstConnect)
+}
+
+func (c *Client) pollReceive(endpoint receiveEndpoint, loggedIn, background bool, onFirstConnect func()) bool {
 	c.listenID++
 	listenID := c.listenID
 	listenReqID := uuid.NewString()
@@ -351,21 +421,11 @@ func (c *Client) doLongPoll(loggedIn, background bool, onFirstConnect func()) bo
 			}
 			return false
 		}
-		log.Trace().Msg("Starting new long-polling request")
-		payload := &gmproto.ReceiveMessagesRequest{
-			Auth: &gmproto.AuthMessage{
-				RequestID:        listenReqID,
-				TachyonAuthToken: c.AuthData.TachyonAuthToken,
-				Network:          c.AuthData.AuthNetwork(),
-				ConfigVersion:    util.ConfigMessage,
-			},
-			Unknown: &gmproto.ReceiveMessagesRequest_UnknownEmptyObject2{
-				Unknown: &gmproto.ReceiveMessagesRequest_UnknownEmptyObject1{},
-			},
-		}
-		url := util.ReceiveMessagesURL
+		log.Trace().Str("receive_endpoint", endpoint.name).Msg("Starting new long-polling request")
+		payload := endpoint.buildPayload(c, listenReqID)
+		url := endpoint.url
 		if c.AuthData.HasCookies() {
-			url = util.ReceiveMessagesURLGoogle
+			url = endpoint.urlGoogle
 		}
 		resp, err := c.makeProtobufHTTPRequestContext(ctx, url, payload, ContentTypePBLite, true)
 		if err != nil {
