@@ -551,6 +551,17 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background 
 		}()
 	}
 	var expectEOF bool
+	// STREAMPULSE (diagnostic): measure the inter-arrival gap between frames on
+	// the ReceiveMessages stream (data + server heartbeats). Determines whether an
+	// isActive=false stream is heartbeated regularly (=> a read/idle deadline is a
+	// clean dead-stream detector) or goes quiet when inactive. Remove once the
+	// liveness fix is designed.
+	lastFrame := time.Now()
+	pulse := func(kind string) {
+		now := time.Now()
+		c.Logger.Info().Str("kind", kind).Dur("gap", now.Sub(lastFrame)).Msg("STREAMPULSE frame on ReceiveMessages")
+		lastFrame = now
+	}
 	for {
 		n, err = reader.Read(buf)
 		if err != nil {
@@ -590,6 +601,7 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background 
 		}
 		switch {
 		case msg.GetData() != nil:
+			pulse("data")
 			c.HandleRPCMsg(msg.GetData())
 			receivedEvents = true
 			onRead()
@@ -603,6 +615,7 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background 
 		case msg.GetStartRead() != nil:
 			log.Trace().Msg("Got startRead message")
 		case msg.GetHeartbeat() != nil:
+			pulse("heartbeat")
 			log.Trace().Msg("Got heartbeat message")
 		default:
 			log.Warn().
