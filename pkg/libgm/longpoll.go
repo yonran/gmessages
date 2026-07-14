@@ -30,6 +30,13 @@ const shortPingTimeout = 10 * time.Second
 const minPingInterval = 30 * time.Second
 const maxRepingTickerTime = 64 * time.Minute
 
+// receiveIdleTimeout bounds how long the foreground ReceiveMessages long-poll may
+// go without any frame before it is treated as dead and reconnected. A healthy
+// stream emits a server heartbeat every ~10s (measured), so this is 3 missed
+// heartbeats — long enough to avoid false positives, short enough to recover a
+// silent stall quickly.
+const receiveIdleTimeout = 30 * time.Second
+
 var pingIDCounter atomic.Uint64
 
 // Goals of the ditto pinger:
@@ -533,14 +540,25 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background 
 	}
 	var closeIn *time.Timer
 	receivedEvents := false
+	idleTimeout := receiveIdleTimeout
+	if c.ReceiveIdleTimeout > 0 {
+		idleTimeout = c.ReceiveIdleTimeout
+	}
 	onRead := func() {
 		if closeIn == nil {
 			return
 		}
-		if receivedEvents {
-			closeIn.Reset(3 * time.Second)
+		if background {
+			if receivedEvents {
+				closeIn.Reset(3 * time.Second)
+			} else {
+				closeIn.Reset(5 * time.Second)
+			}
 		} else {
-			closeIn.Reset(5 * time.Second)
+			// Foreground: a healthy ReceiveMessages stream emits a server
+			// heartbeat every ~10s, so any frame (data or heartbeat) rearms the
+			// idle deadline. See the timer setup below.
+			closeIn.Reset(idleTimeout)
 		}
 	}
 	if background {
@@ -548,6 +566,33 @@ func (c *Client) readLongPoll(log *zerolog.Logger, rc io.ReadCloser, background 
 		go func() {
 			<-closeIn.C
 			c.closeLongPolling()
+		}()
+	} else {
+		// Foreground dead-stream detector. The long-poll can go silently deaf —
+		// no data, no heartbeat, no error (a half-open connection: LB/NAT idle
+		// timeout, or the server dropping the stream) — and reader.Read below
+		// would otherwise block forever, so inbound messages silently stop until
+		// something else forces a reconnect. The server heartbeats a live stream
+		// every ~10s (measured), so if no frame arrives within receiveIdleTimeout
+		// (3 missed heartbeats) the stream is dead: close it to make the poll loop
+		// reconnect. This is the liveness detection the real web client has.
+		closeIn = time.NewTimer(idleTimeout)
+		idleDone := make(chan struct{})
+		defer close(idleDone)
+		go func() {
+			select {
+			case <-closeIn.C:
+				c.Logger.Warn().
+					Dur("idle_timeout", idleTimeout).
+					Msg("ReceiveMessages stream idle past deadline (no data/heartbeat) — closing to force reconnect")
+				// Close only THIS poll's connection so reader.Read unblocks and the
+				// pollReceive loop reopens. Do NOT call closeLongPolling(): that
+				// bumps listenID, which would end the poll loop instead of
+				// reconnecting it.
+				_ = rc.Close()
+			case <-idleDone:
+				closeIn.Stop()
+			}
 		}()
 	}
 	var expectEOF bool

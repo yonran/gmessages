@@ -149,6 +149,13 @@ type Client struct {
 	// "active web client". Set before Connect.
 	DontMarkActive bool
 
+	// ReceiveIdleTimeout overrides how long the foreground ReceiveMessages
+	// long-poll may go without any frame (data or server heartbeat) before it is
+	// treated as dead and reconnected. Zero uses receiveIdleTimeout (30s). A
+	// healthy stream heartbeats every ~10s, so keep this well above that; set it
+	// low only to force-exercise the reconnect path in tests. Set before Connect.
+	ReceiveIdleTimeout time.Duration
+
 	// UseModernReceive opts this session into the modern messages.google.com/web
 	// receive path (Messaging/PullMessages) instead of the legacy
 	// Messaging/ReceiveMessages long-poll. Defaults to false, so nothing changes
