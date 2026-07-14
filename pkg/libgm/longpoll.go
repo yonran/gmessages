@@ -228,18 +228,15 @@ func (dp *dittoPinger) Ping(pingID uint64, timeout time.Duration, timeoutCount i
 		// Google needs to keep notifying the phone. Fire-and-forget: drain any
 		// late response so nothing blocks, and rely on the long-poll +
 		// data-receive check for connection health.
-		// HEALTHPROBE (diagnostic): observe whether an isActive=false ping is
-		// acked via the long-poll and how long it took, without acting on the
-		// result yet. This tells us whether the ping response-wait is a usable
-		// dead-long-poll detector in inactive mode. Logged at Info/Warn so it
-		// shows at the default level. Remove once the receive-stall fix lands.
+		// Confirmed experimentally: an isActive=false ditto ping is NEVER acked
+		// via the long-poll (it times out whether the long-poll is alive or dead),
+		// so the response can't be used as a dead-long-poll detector in inactive
+		// mode. Drain any late response so nothing blocks; connection health in
+		// this mode is handled out-of-band by openmessage's periodic reconcile.
 		go func() {
-			start := now
 			select {
 			case <-pingChan:
-				dp.log.Info().Uint64("ping_id", pingID).Dur("waited", time.Since(start)).Msg("HEALTHPROBE inactive ditto ping ACKED (long-poll alive)")
 			case <-time.After(defaultPingTimeout):
-				dp.log.Warn().Uint64("ping_id", pingID).Msg("HEALTHPROBE inactive ditto ping TIMED OUT (long-poll may be dead)")
 			}
 		}()
 		return
