@@ -292,6 +292,28 @@ func (dp *dittoPinger) Loop() {
 	}
 }
 
+// reassertActiveSession re-blesses this session as an attended receiver after
+// the ReceiveMessages stream is reopened. Confirmed experimentally: a freshly
+// asserted session receives inbound over the stream, but after the stream
+// reconnects (e.g. connection reset by peer) Google delivers nothing on the
+// reopened stream — it stays healthy (HTTP 200, heartbeats) yet withholds all
+// message frames until the session asserts activity again. Unlike
+// SetActiveSession, the session ID is NOT reset: minting a new session fires
+// the phone's "Device pairing" notification, while GET_UPDATES on the existing
+// session is silent (the same call HandleNoRecentUpdates already makes).
+func (c *Client) reassertActiveSession(log *zerolog.Logger) {
+	err := c.sessionHandler.sendMessageNoResponse(SendMessageParams{
+		Action:    gmproto.ActionType_GET_UPDATES,
+		OmitTTL:   true,
+		RequestID: c.sessionHandler.sessionID,
+	})
+	if err != nil {
+		log.Err(err).Msg("Failed to re-assert active session after long-poll reopen")
+	} else {
+		log.Debug().Msg("Re-asserted active session after long-poll reopen")
+	}
+}
+
 func (dp *dittoPinger) HandleNoRecentUpdates() {
 	dp.client.triggerEvent(&events.NoDataReceived{})
 	err := dp.client.sessionHandler.sendMessageNoResponse(SendMessageParams{
@@ -514,6 +536,15 @@ func (c *Client) pollReceive(endpoint receiveEndpoint, loggedIn, background bool
 		if onFirstConnect != nil {
 			go onFirstConnect()
 			onFirstConnect = nil
+		} else if loggedIn && !c.DontMarkActive {
+			// Re-assert this session as an attended receiver on every stream
+			// reopen after the first (postConnect covers the first). Google
+			// stops fanning out inbound messages to a session once its
+			// ReceiveMessages stream is re-established without a fresh activity
+			// assertion: the connection reopens fine (HTTP 200, heartbeats) but
+			// delivers nothing. The real web client re-asserts on every tab
+			// hidden→visible transition, so its reopens are always re-blessed.
+			go c.reassertActiveSession(&log)
 		}
 		cleanClose := c.readLongPoll(&log, resp.Body, background)
 		c.longPollingConn = nil
