@@ -362,3 +362,68 @@ not trigger false PhoneNotResponding / exponential back-off.
 again, and openmessage still received the message; connection stable, no ping
 flapping. Earlier candidates that did NOT fix it: deviceType WEB-vs-TABLET,
 PullMessages (`UseModernReceive`), passive mode (`DontMarkActive`).
+
+---
+
+## ⚠️ SUPERSEDED IN PART — full routing model (verified live, 2026-07-15/16)
+
+The 2026-07-11 fix above got the ringing right but its receive claim
+("openmessage still received the message" under isActive=false) only holds
+near a fresh connect. Systematic probing (openmessage
+docs/receive-reliability-labnotebook.md, runs A–T) established the complete
+model. Every claim below is tied to a live experiment.
+
+### The two independent server-side switches
+
+1. **Stream fan-out** (does this session's ReceiveMessages long-poll carry
+   inbound message frames?)
+   - GRANTED by an activity assertion: `SetActiveSession` (GET_UPDATES after
+     `ResetSessionID`) or a plain `GET_UPDATES` on the existing session.
+   - REVOKED when the long-poll is re-established (clean ~15-min cycle or
+     TCP reset) without a fresh assertion — the reopened poll stays healthy
+     (HTTP 200, ~10s heartbeats) but delivers **zero** message frames
+     (runs N/O: two probes never arrived; 2 ESTABLISHED conns to the receive
+     host the whole time). Also revoked/absent under sustained
+     isActive=false pinging (run K: probe skipped the stream, arrived only
+     via a ListConversations pull).
+   - The real web client never hits the reopen trap because it re-asserts on
+     every tab hidden→visible transition. libgm now replicates this:
+     `reassertActiveSession` sends GET_UPDATES (existing session ID) after
+     every reopen. Same-session GET_UPDATES does NOT fire the phone's
+     "Device pairing" notification — only `ResetSessionID` (new session)
+     does.
+
+2. **Phone ring-suppression** (does the phone still ring/vibrate?)
+   - Suppressed while a session keeps REPORTING isActive=true: the
+     minute-cadence `NOTIFY_DITTO_ACTIVITY{isActive:true}` ping silences the
+     phone continuously (user report, 2026-07-15 night, INACTIVE=0 era).
+   - Decays quickly once the assertions stop: after a connect-time
+     `SetActiveSession` with NO subsequent pings, the phone vibrated for a
+     probe ~90s later (run S).
+   - A backgrounded real tab: phone rings (run L) while the tab still
+     receives over its stream (run J: backgrounded tab's only traffic on
+     message arrival = AckMessages + one ditto SendMessage).
+
+### Consequence: the ditto ping's isActive flag has NO good value for a bridge
+
+true = phone permanently silent; false = stream fan-out lost. A real
+backgrounded tab sends neither — assert once on focus, then silence. Bridge
+replica: `libgm.Client.SkipDittoPings` (openmessage `OPENMESSAGE_NO_PINGS=1`):
+no periodic ditto pings; keep SetActiveSession-on-connect and
+reassert-on-reopen; connection liveness falls to the receive idle
+read-deadline (30s; healthy stream heartbeats every ~10s — measured).
+
+**Verified (run S):** probe streamed to the bridge in ~5s with the reconcile
+pull disabled AND the phone vibrated — the first configuration achieving both.
+
+### Retractions / corrections along the way
+- "Old API registration is the notification owner" (§ earlier): DEAD — the
+  real web client also opens ReceiveMessages streams (run J startup capture).
+- "Passive mode did not restore ringing because Google keeps the last state":
+  unreliable churn-era data; run S shows suppression decays ~90s after the
+  last assertion.
+- "Google does not stream to an inactive client, period" (Phase 3): the
+  durable mechanism is reopen-without-reassert; sustained isActive=false
+  pings also correlate with no fan-out (run K), but the isolated
+  inactive+reassert combination was never validated (run R retracted — the
+  probe was never actually sent).
