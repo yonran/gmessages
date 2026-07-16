@@ -192,6 +192,19 @@ func (dp *dittoPinger) WaitForResponse(pingID uint64, start time.Time, timeout t
 }
 
 func (dp *dittoPinger) Ping(pingID uint64, timeout time.Duration, timeoutCount int, reset *resetter) {
+	if dp.client.SkipDittoPings {
+		// Backgrounded-tab replica: send NO periodic NOTIFY_DITTO_ACTIVITY at all.
+		// The ping's isActive flag is a routing signal with no good value for a
+		// headless bridge: true keeps re-suppressing the phone's notifications
+		// (rings/vibration) every minute, false revokes stream fan-out entirely.
+		// A real backgrounded web tab sends neither — it asserts active once on
+		// focus/load and then goes quiet, which keeps stream fan-out while the
+		// phone's ring-suppression decays. Connection liveness is covered by the
+		// receive idle read-deadline (~10s heartbeats, 30s deadline), and
+		// SetActiveSession-on-connect + reassert-on-reopen still run (unlike
+		// DontMarkActive, which skips those too).
+		return
+	}
 	if dp.client.DontMarkActive {
 		// Passive/background mode: skip the ditto-activity keepalive entirely so
 		// we never assert active presence. The long-poll receive loop

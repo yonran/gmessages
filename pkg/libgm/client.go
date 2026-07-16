@@ -176,6 +176,19 @@ type Client struct {
 	// skips the ping entirely). See docs/CAPTURED_FINDINGS.md.
 	ReportInactive bool
 
+	// SkipDittoPings suppresses the periodic NOTIFY_DITTO_ACTIVITY ping entirely
+	// while KEEPING SetActiveSession-on-connect and the reopen re-assertion
+	// (unlike DontMarkActive, which skips those too). This replicates a real
+	// backgrounded web tab, which asserts active once on focus/load and then
+	// sends no activity signal at all: measured live, pinging isActive=true
+	// keeps re-suppressing the phone's rings every minute, and pinging
+	// isActive=false revokes stream fan-out (inbound stops arriving on the
+	// long-poll). Liveness is covered by ReceiveIdleTimeout instead of ping
+	// acks. Overrides ReportInactive (no ping is sent to carry it). Set before
+	// Connect. See docs/CAPTURED_FINDINGS.md and openmessage's
+	// docs/receive-reliability-labnotebook.md runs J–R.
+	SkipDittoPings bool
+
 	PairCallback atomic.Pointer[func(data *gmproto.PairedData)]
 
 	AuthData *AuthData
