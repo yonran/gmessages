@@ -68,15 +68,22 @@ func (ad *AuthData) AddCookiesToRequest(req *http.Request) {
 	}
 }
 
-func (ad *AuthData) UpdateCookiesFromResponse(resp *http.Response) {
+// UpdateCookiesFromResponse applies Set-Cookie headers to the stored cookies
+// and reports whether any value actually changed.
+func (ad *AuthData) UpdateCookiesFromResponse(resp *http.Response) bool {
 	ad.CookiesLock.Lock()
 	defer ad.CookiesLock.Unlock()
 	if ad.Cookies == nil {
-		return
+		return false
 	}
+	changed := false
 	for _, cookie := range resp.Cookies() {
-		ad.Cookies[cookie.Name] = cookie.Value
+		if ad.Cookies[cookie.Name] != cookie.Value {
+			ad.Cookies[cookie.Name] = cookie.Value
+			changed = true
+		}
 	}
+	return changed
 }
 
 func (ad *AuthData) HasCookies() bool {
@@ -392,8 +399,8 @@ func (c *Client) fetchConfig(ctx context.Context) (*gmproto.Config, error) {
 	c.AuthData.AddCookiesToRequest(req)
 
 	resp, err := c.http.Do(req)
-	if resp != nil {
-		c.AuthData.UpdateCookiesFromResponse(resp)
+	if resp != nil && c.AuthData.UpdateCookiesFromResponse(resp) {
+		c.triggerEvent(&events.CookiesUpdated{})
 	}
 	config, err := typedHTTPResponse[*gmproto.Config](resp, err)
 	if err != nil {

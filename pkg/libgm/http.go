@@ -56,7 +56,9 @@ func (c *Client) makeProtobufHTTPRequestContext(ctx context.Context, url string,
 	if reqErr != nil {
 		return res, reqErr
 	}
-	c.AuthData.UpdateCookiesFromResponse(res)
+	if c.AuthData.UpdateCookiesFromResponse(res) {
+		c.triggerEvent(&events.CookiesUpdated{})
+	}
 	return res, nil
 }
 
