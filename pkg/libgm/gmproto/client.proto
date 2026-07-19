@@ -26,6 +26,24 @@ message ReceiveMessagesRequest {
     optional UnknownEmptyObject2 unknown = 4;
 }
 
+// PullMessagesRequest is the modern-API (messages.google.com/web) receive body.
+// See docs/MODERN_API.md §1.1 and docs/IMPLEMENTATION_NOTES.md.
+//
+// NOT YET DEFINED AS A GENERATED MESSAGE ON PURPOSE: the only HIGH-confidence
+// field is `header = 1` (a RequestHeader whose internals are opaque), and the
+// resume-cursor / ack-state field(s) below it are UNKNOWN (the JS decodes them
+// schema-less and every observed payload was encrypted). Fabricating field
+// numbers here would be a guess. Until a live capture pins the layout, the Go
+// receive loop (longpoll.go: doPullMessages) reuses ReceiveMessagesRequest —
+// which already places the auth/header blob at field 1, matching the one
+// HIGH-confidence fact — and POSTs it to util.PullMessagesURL.
+//
+// When a capture is available, replace the clone with something like:
+//   message PullMessagesRequest {
+//     RequestHeader header = 1;   // HIGH [JS]  (RequestHeader body still UNKNOWN)
+//     // <cursor / ack-state> = ?; // field number UNKNOWN — do not guess
+//   }
+
 message MessageReadRequest {
     string conversationID = 2;
     string messageID = 3;
