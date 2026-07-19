@@ -191,6 +191,28 @@ func (dp *dittoPinger) WaitForResponse(pingID uint64, start time.Time, timeout t
 }
 
 func (dp *dittoPinger) Ping(pingID uint64, timeout time.Duration, timeoutCount int, reset *resetter) {
+	if dp.client.SkipDittoPings {
+		// Backgrounded-tab replica: send NO periodic NOTIFY_DITTO_ACTIVITY at all.
+		// The ping's isActive flag is a routing signal with no good value for a
+		// headless bridge: true keeps re-suppressing the phone's notifications
+		// (rings/vibration) every minute, false revokes stream fan-out entirely.
+		// A real backgrounded web tab sends neither — it asserts active once on
+		// focus/load and then goes quiet, which keeps stream fan-out while the
+		// phone's ring-suppression decays. Connection liveness is covered by the
+		// receive idle read-deadline (~10s heartbeats, 30s deadline), and
+		// SetActiveSession-on-connect + reassert-on-reopen still run (unlike
+		// DontMarkActive, which skips those too).
+		return
+	}
+	if dp.client.DontMarkActive {
+		// Passive/background mode: skip the ditto-activity keepalive entirely so
+		// we never assert active presence. The long-poll receive loop
+		// self-maintains and keeps delivering messages (a backgrounded web tab
+		// likewise sends no activity pings); auth-expiry is still caught via
+		// ListenFatalError on the long-poll. The Loop's periodic data-receive
+		// check remains as a slow-path recovery.
+		return
+	}
 	dp.pingHandlingLock.Lock()
 	if time.Since(dp.lastPingTime) < minPingInterval {
 		dp.log.Debug().
@@ -217,6 +239,27 @@ func (dp *dittoPinger) Ping(pingID uint64, timeout time.Duration, timeoutCount i
 		return
 	}
 	dp.pingHandlingLock.Unlock()
+	if dp.client.ReportInactive {
+		// We just reported isActive=false. The server does not ack "inactive"
+		// pings the way it acks active keepalives, so waiting for a response
+		// would always time out and wrongly fire PhoneNotResponding plus
+		// exponential back-off — which would starve the isActive=false signal
+		// Google needs to keep notifying the phone. Fire-and-forget: drain any
+		// late response so nothing blocks, and rely on the long-poll +
+		// data-receive check for connection health.
+		// Confirmed experimentally: an isActive=false ditto ping is NEVER acked
+		// via the long-poll (it times out whether the long-poll is alive or dead),
+		// so the response can't be used as a dead-long-poll detector in inactive
+		// mode. Drain any late response so nothing blocks; connection health in
+		// this mode is handled out-of-band by openmessage's periodic reconcile.
+		go func() {
+			select {
+			case <-pingChan:
+			case <-time.After(defaultPingTimeout):
+			}
+		}()
+		return
+	}
 	if timeoutCount == 0 {
 		dp.WaitForResponse(pingID, now, timeout, timeoutCount, pingChan, reset)
 	} else {
