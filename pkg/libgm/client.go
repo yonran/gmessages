@@ -134,6 +134,13 @@ type Client struct {
 
 	GaiaHackyDeviceSwitcher int
 
+	// ReceiveIdleTimeout overrides how long the foreground ReceiveMessages
+	// long-poll may go without any frame (data or server heartbeat) before it is
+	// treated as dead and reconnected. Zero uses receiveIdleTimeout (30s). A
+	// healthy stream heartbeats every ~10s, so keep this well above that; set it
+	// low only to force-exercise the reconnect path in tests. Set before Connect.
+	ReceiveIdleTimeout time.Duration
+
 	PairCallback atomic.Pointer[func(data *gmproto.PairedData)]
 
 	AuthData *AuthData
