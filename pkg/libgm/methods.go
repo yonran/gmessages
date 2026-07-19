@@ -162,10 +162,17 @@ func (c *Client) NotifyDittoActivity() (<-chan *IncomingRPCMessage, error) {
 	return ch, err
 }
 
+// Field 2 ("success") is really the web client's isActive/foreground flag:
+// the real messages.google.com/web client reports isActive=true only while its
+// tab is focused and isActive=false when backgrounded, at which point Google
+// resumes delivering notifications to the phone. libgm has always hard-coded
+// true, which keeps the session perpetually "active" and suppresses the phone.
+// When ReportInactive is set, report false so the phone keeps notifying while
+// the bridge still receives over the long-poll.
 func (c *Client) notifyDittoActivity() (string, chan *IncomingRPCMessage, error) {
 	return c.sessionHandler.sendAsyncMessageWithID(SendMessageParams{
 		Action: gmproto.ActionType_NOTIFY_DITTO_ACTIVITY,
-		Data:   &gmproto.NotifyDittoActivityRequest{Success: true},
+		Data:   &gmproto.NotifyDittoActivityRequest{Success: !c.ReportInactive},
 	})
 }
 

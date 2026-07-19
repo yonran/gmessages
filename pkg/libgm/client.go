@@ -134,12 +134,43 @@ type Client struct {
 
 	GaiaHackyDeviceSwitcher int
 
+	// DontMarkActive makes this session behave like a permanently backgrounded
+	// Messages-for-web tab: postConnect skips SetActiveSession and the client
+	// does not ack browser-presence checks. It keeps receiving over the
+	// long-poll but never asserts foreground/active presence, so Google keeps
+	// delivering notifications to the phone instead of suppressing them for an
+	// "active web client". Set before Connect.
+	DontMarkActive bool
+
 	// ReceiveIdleTimeout overrides how long the foreground ReceiveMessages
 	// long-poll may go without any frame (data or server heartbeat) before it is
 	// treated as dead and reconnected. Zero uses receiveIdleTimeout (30s). A
 	// healthy stream heartbeats every ~10s, so keep this well above that; set it
 	// low only to force-exercise the reconnect path in tests. Set before Connect.
 	ReceiveIdleTimeout time.Duration
+
+	// ReportInactive makes the periodic NOTIFY_DITTO_ACTIVITY ping report
+	// isActive=false (NotifyDittoActivityRequest.Success, field 2) instead of the
+	// hard-coded true. The real web client reports isActive=false when its tab is
+	// backgrounded, which is what makes Google keep notifying the phone; a
+	// headless bridge that always reports true stays perpetually "active" and
+	// suppresses the phone. This is a RUNTIME toggle (no re-pair needed) — the
+	// ditto pinger must still run (do NOT combine with DontMarkActive, which
+	// skips the ping entirely). See docs/CAPTURED_FINDINGS.md.
+	ReportInactive bool
+
+	// SkipDittoPings suppresses the periodic NOTIFY_DITTO_ACTIVITY ping entirely
+	// while KEEPING SetActiveSession-on-connect and the reopen re-assertion
+	// (unlike DontMarkActive, which skips those too). This replicates a real
+	// backgrounded web tab, which asserts active once on focus/load and then
+	// sends no activity signal at all: measured live, pinging isActive=true
+	// keeps re-suppressing the phone's rings every minute, and pinging
+	// isActive=false revokes stream fan-out (inbound stops arriving on the
+	// long-poll). Liveness is covered by ReceiveIdleTimeout instead of ping
+	// acks. Overrides ReportInactive (no ping is sent to carry it). Set before
+	// Connect. See docs/CAPTURED_FINDINGS.md and openmessage's
+	// docs/receive-reliability-labnotebook.md runs J–R.
+	SkipDittoPings bool
 
 	PairCallback atomic.Pointer[func(data *gmproto.PairedData)]
 
@@ -268,16 +299,23 @@ func (c *Client) postConnect() {
 	c.Logger.Debug().Msg("Sending acks before get updates request")
 	c.sessionHandler.sendAckRequest()
 	time.Sleep(1 * time.Second)
-	c.Logger.Debug().Msg("Sending get updates request")
-	err := c.SetActiveSession()
-	if err != nil {
-		c.Logger.Err(err).Msg("Failed to set active session")
-		c.triggerEvent(&events.PingFailed{
-			Error: fmt.Errorf("failed to set active session: %w", err),
-		})
-		return
+	if c.DontMarkActive {
+		// Passive/background mode: don't claim the active-session slot. The
+		// long-poll still delivers messages, but without asserting foreground
+		// presence Google keeps notifying the phone. See DontMarkActive.
+		c.Logger.Debug().Msg("DontMarkActive set — skipping SetActiveSession (passive/background mode)")
+	} else {
+		c.Logger.Debug().Msg("Sending get updates request")
+		err := c.SetActiveSession()
+		if err != nil {
+			c.Logger.Err(err).Msg("Failed to set active session")
+			c.triggerEvent(&events.PingFailed{
+				Error: fmt.Errorf("failed to set active session: %w", err),
+			})
+			return
+		}
+		c.Logger.Debug().Msg("Sent set active session/get updates request")
 	}
-	c.Logger.Debug().Msg("Sent set active session/get updates request")
 
 	doneChan := make(chan struct{})
 	go func() {
