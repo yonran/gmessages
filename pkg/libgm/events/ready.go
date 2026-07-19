@@ -15,6 +15,13 @@ type ClientReady struct {
 
 type AuthTokenRefreshed struct{}
 
+// CookiesUpdated is emitted when a response's Set-Cookie headers changed the
+// stored Google account cookies. Google rotates session cookies (SIDCC and
+// friends) every few minutes and invalidates superseded values, so a client
+// that owns its cookie chain must persist the new values promptly or a
+// restart will resume from a dead snapshot.
+type CookiesUpdated struct{}
+
 type GaiaLoggedOut struct{}
 
 type NoDataReceived struct{}
